@@ -3,9 +3,10 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 from PIL import Image, ImageDraw
 import numpy as np
 import heapq
+from collections import deque
 
 # --- 1. 페이지 설정 ---
-st.set_page_config(page_title="SIK 2025 전체 부스 내비게이션", page_icon="🎨", layout="wide")
+st.set_page_config(page_title="SIK 2025 스마트 내비게이션", page_icon="🎨", layout="wide")
 
 st.markdown("""
     <style>
@@ -15,14 +16,13 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 전체 부스 데이터 (PDF 기반 전체 리스트) ---
-# [알림] 제가 존(Zone)별로 대략적인 위치를 잡아두었습니다. 
-# 실제 도면과 오차가 있을 수 있으니, 실행 후 '관리자 모드'로 클릭하여 정확한 좌표를 확인 후 수정하세요.
+# --- 2. 전체 부스 데이터 ---
+# [Tip] 이제 부스 정중앙(색깔 위)을 좌표로 찍어도 됩니다! AI가 알아서 앞쪽 통로로 안내합니다.
 BOOTH_LOCATIONS = {
     # ================= [주요 시설] =================
-    "출입구 (Entrance)": (500, 950), # 하단 중앙
-    "카페테리아 (Cafeteria)": (100, 150), # 좌측 상단
-    "화장실 (Restroom)": (950, 500), # 우측 중앙
+    "출입구 (Entrance)": (500, 950),
+    "카페테리아 (Cafeteria)": (100, 150),
+    "화장실 (Restroom)": (950, 500),
     "수유실": (900, 100),
     "경품수령처": (450, 900),
 
@@ -38,7 +38,7 @@ BOOTH_LOCATIONS = {
     "네컷프레임 사진관": (100, 100),
     "라이브드로잉": (250, 250),
 
-    # ================= [A존 - 좌측 상단 구역 추정] =================
+    # ================= [A존] =================
     "A-100 1989 PALETTE": (100, 750),
     "A-101 클립아트코리아": (100, 760),
     "A-104 끼니디자인": (110, 750),
@@ -51,7 +51,7 @@ BOOTH_LOCATIONS = {
     "A-130 굿워크": (140, 760),
     "A-132 하함스튜디오": (150, 750),
 
-    # ================= [B존 - 좌측 중단 구역 추정] =================
+    # ================= [B존] =================
     "B-104 고양이다방": (200, 750),
     "B-110 지니요니": (200, 760),
     "B-111 TTIPCY": (210, 750),
@@ -68,7 +68,7 @@ BOOTH_LOCATIONS = {
     "B-221 한림사": (270, 750),
     "B-224 키팅제이": (270, 760),
 
-    # ================= [C존 - 중앙 상단 구역 추정] =================
+    # ================= [C존] =================
     "C-100 윤조유라": (300, 300),
     "C-103 비모델 스튜디오": (300, 310),
     "C-104 달빛곰": (310, 300),
@@ -92,7 +92,7 @@ BOOTH_LOCATIONS = {
     "C-220 옴즈": (400, 300),
     "C-231 피피": (400, 310),
 
-    # ================= [D존 - 중앙 구역 추정] =================
+    # ================= [D존] =================
     "D-100 말앞이 디자인": (500, 400),
     "D-101 미야오타운": (500, 410),
     "D-103 제니빌리지": (510, 400),
@@ -113,7 +113,7 @@ BOOTH_LOCATIONS = {
     "D-224 모도리 스튜디오": (580, 410),
     "D-232 Draft.apics": (590, 400),
 
-    # ================= [F존 - 우측 상단 구역 추정] =================
+    # ================= [F존] =================
     "F-101 코코의 그림공간": (700, 300),
     "F-102 고동성": (700, 310),
     "F-103 호랑": (710, 300),
@@ -148,7 +148,7 @@ BOOTH_LOCATIONS = {
     "F-229 루이와코이누": (850, 310),
     "F-231 Catist": (860, 300),
 
-    # ================= [G존 - 중앙 하단 구역 추정] =================
+    # ================= [G존] =================
     "G-100 쇼킹핑크로즈": (400, 600),
     "G-101 유승": (400, 610),
     "G-111 도아세": (410, 600),
@@ -169,7 +169,7 @@ BOOTH_LOCATIONS = {
     "G-229 dawnitive wave": (480, 610),
     "G-231 사리안루니": (490, 600),
 
-    # ================= [H존 - 우측 중앙 구역 추정] =================
+    # ================= [H존] =================
     "H-100 주스": (600, 200),
     "H-101 안녕, 말로하": (600, 210),
     "H-102 리노프렌즈": (610, 200),
@@ -199,7 +199,7 @@ BOOTH_LOCATIONS = {
     "H-230 큐티지파실": (730, 200),
     "H-231 허다마리": (730, 210),
 
-    # ================= [J존 - 중앙 좌측 구역 추정] =================
+    # ================= [J존] =================
     "J-102 차리": (100, 500),
     "J-103 스누즈키즈": (100, 510),
     "J-106 Netty Lee": (110, 500),
@@ -223,7 +223,7 @@ BOOTH_LOCATIONS = {
     "J-229 젤리부 (JeliRivu)": (200, 500),
     "J-231 개구리라미": (200, 510),
 
-    # ================= [K존 - 우측 하단 구역 추정] =================
+    # ================= [K존] =================
     "K-101 코리아": (900, 100),
     "K-104 오덕스튜디오": (900, 110),
     "K-106 라운드루프": (910, 100),
@@ -246,7 +246,7 @@ BOOTH_LOCATIONS = {
     "K-231 이트맨": (990, 110),
     "K-235 김중이": (990, 120),
 
-    # ================= [L존 - 좌측 하단 구역 추정] =================
+    # ================= [L존] =================
     "L-100 하나님": (50, 700),
     "L-101 심냥즈": (50, 710),
     "L-103 니버스": (60, 700),
@@ -262,7 +262,7 @@ BOOTH_LOCATIONS = {
     "L-220 모체토리": (110, 700),
     "L-224 크리미밀키": (110, 710),
 
-    # ================= [M존 - 중앙 하단 구역 추정] =================
+    # ================= [M존] =================
     "M-101 문학 섭": (250, 900),
     "M-102 아야네": (250, 910),
     "M-103 더푸리 빌리지": (260, 900),
@@ -294,7 +294,7 @@ BOOTH_LOCATIONS = {
     "M-229 Gunwoo Frierids": (390, 900),
     "M-230 사리안루니": (390, 910),
 
-    # ================= [O존 - 우측 하단 구역 추정] =================
+    # ================= [O존] =================
     "O-101 키스틱빌리지": (850, 800),
     "O-102 zeeky": (850, 810),
     "O-104 감성공작소": (860, 800),
@@ -340,7 +340,7 @@ BOOTH_LOCATIONS = {
     "P-117 마오안(ADAN)": (690, 50),
     "P-118 즈(ploppyz)": (700, 50),
 
-    # ================= [S존 - 특별관] =================
+    # ================= [S존] =================
     "S-101 계원예대": (800, 200),
     "S-102 계원예대 순수미술": (800, 210),
     "S-104 이들 Yidle": (810, 200),
@@ -380,7 +380,7 @@ BOOTH_LOCATIONS = {
     "소소컴": (350, 320)
 }
 
-# --- 3. 핵심 알고리즘: A* 경로 탐색 (장애물 회피) ---
+# --- 3. 핵심 알고리즘: A* 경로 탐색 + [NEW] 가장 가까운 통로 찾기 ---
 @st.cache_data
 def load_nav_mesh(image_path, grid_size=(100, 100)):
     try:
@@ -392,6 +392,43 @@ def load_nav_mesh(image_path, grid_size=(100, 100)):
         return grid, img.size
     except Exception as e:
         return None, None
+
+def get_nearest_walkable_point(grid, start_node, max_radius=10):
+    """
+    [핵심 기능] 시작점(부스)이 벽(1)이라면, 주변을 나선형으로 탐색해
+    가장 가까운 통로(0) 좌표를 반환합니다.
+    """
+    rows, cols = grid.shape
+    
+    # 이미 통로라면 바로 반환
+    if grid[start_node[0]][start_node[1]] == 0:
+        return start_node
+        
+    # BFS 탐색 (가장 가까운 곳부터 찾기 위해)
+    queue = deque([start_node])
+    visited = set([start_node])
+    
+    # 상하좌우 및 대각선 탐색
+    directions = [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (-1,1), (1,-1), (1,1)]
+    
+    while queue:
+        curr_r, curr_c = queue.popleft()
+        
+        # 통로 발견!
+        if grid[curr_r][curr_c] == 0:
+            return (curr_r, curr_c)
+            
+        # 범위 제한 (너무 멀리 찾지 않도록)
+        if abs(curr_r - start_node[0]) > max_radius or abs(curr_c - start_node[1]) > max_radius:
+            continue
+            
+        for dr, dc in directions:
+            nr, nc = curr_r + dr, curr_c + dc
+            if 0 <= nr < rows and 0 <= nc < cols and (nr, nc) not in visited:
+                visited.add((nr, nc))
+                queue.append((nr, nc))
+                
+    return None # 못 찾음
 
 def heuristic(a, b):
     return np.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2)
@@ -438,23 +475,16 @@ def astar(array, start, goal):
 # --- 4. 검색 도우미 함수 ---
 def find_target(keyword):
     if not keyword: return None
-    
-    # 검색어 전처리: 소문자, 공백제거, 특수기호 제거
     keyword = keyword.lower().replace("-", "").replace(" ", "")
-    
-    # 5 <-> s, 0 <-> o 자동 변환용 키워드
     keyword_s = keyword.replace("5", "s")
     keyword_o = keyword.replace("0", "o")
     
     matches = []
     for key in BOOTH_LOCATIONS.keys():
         key_clean = key.lower().replace("-", "").replace(" ", "")
-        
-        # 포함 여부 확인 (원본, s변환, o변환 모두 체크)
         if (keyword in key_clean) or (keyword_s in key_clean) or (keyword_o in key_clean):
             matches.append(key)
     
-    # 검색어 길이가 짧은 순(정확도 높은 순)으로 정렬
     matches.sort(key=len)
     return matches[0] if matches else None
 
@@ -478,14 +508,14 @@ except FileNotFoundError:
 
 # --- 기능: 관리자 모드 ---
 if admin_mode:
-    st.info("👇 지도에서 부스 위치를 클릭하여 정확한 좌표를 확인하세요.")
+    st.info("👇 지도에서 부스 위치를 클릭하면 정확한 좌표를 딸 수 있습니다.")
     value = streamlit_image_coordinates(original_image, key="pil")
     if value:
         x, y = value['x'], value['y']
         st.markdown(f"""
         <div class='coord-box'>
             📍 클릭한 좌표: <b>({x}, {y})</b><br>
-            위 코드의 <code>BOOTH_LOCATIONS</code>에서 해당 부스를 찾아 숫자를 바꿔주세요.
+            위 코드의 <code>BOOTH_LOCATIONS</code>를 수정하세요.
         </div>
         """, unsafe_allow_html=True)
         draw = ImageDraw.Draw(original_image)
@@ -497,7 +527,7 @@ else:
     with st.form("nav"):
         c1, c2 = st.columns(2)
         start_txt = c1.text_input("출발지", placeholder="예: 출입구")
-        end_txt = c2.text_input("목적지", placeholder="예: 젤리부, C-118")
+        end_txt = c2.text_input("목적지", placeholder="예: 소소컴, C-118")
         btn = st.form_submit_button("길찾기 🚀")
     
     if btn:
@@ -515,25 +545,32 @@ else:
             # 그리드 좌표 변환
             scale_x = GRID_W / original_size[0]
             scale_y = GRID_H / original_size[1]
-            grid_start = (int(sy * scale_y), int(sx * scale_x))
-            grid_end = (int(ey * scale_y), int(ex * scale_x))
+            grid_start_raw = (int(sy * scale_y), int(sx * scale_x))
+            grid_end_raw = (int(ey * scale_y), int(ex * scale_x))
             
-            with st.spinner("AI가 장애물을 피해 경로를 계산 중입니다..."):
-                path = astar(grid_map, grid_start, grid_end)
+            # [NEW] 벽(부스)에 좌표가 있다면, 가장 가까운 통로로 '스내핑(Snapping)'
+            grid_start = get_nearest_walkable_point(grid_map, grid_start_raw)
+            grid_end = get_nearest_walkable_point(grid_map, grid_end_raw)
             
-            if path:
-                draw = ImageDraw.Draw(original_image)
-                real_path = []
-                for py, px in path:
-                    real_path.append((int(px / scale_x), int(py / scale_y)))
-                
-                if len(real_path) > 1:
-                    draw.line(real_path, fill="#FF007F", width=6)
-                
-                r = 15
-                draw.ellipse((sx-r, sy-r, sx+r, sy+r), fill="#00C853", outline="white", width=3)
-                draw.ellipse((ex-r, ey-r, ex+r, ey+r), fill="#FF0000", outline="white", width=3)
-                st.image(original_image, use_container_width=True)
+            if not grid_start or not grid_end:
+                 st.error("주변에 통로가 없습니다. 맵이 너무 어둡거나 좌표가 완전히 막혀있습니다.")
             else:
-                st.warning("경로를 찾을 수 없습니다. (출발/도착지가 벽 위에 있거나 인식이 안됨)")
-                st.info("Tip: 관리자 모드에서 좌표를 통로 쪽으로 약간 옮겨보세요.")
+                with st.spinner("AI가 통로를 따라 경로를 계산 중입니다..."):
+                    path = astar(grid_map, grid_start, grid_end)
+                
+                if path:
+                    draw = ImageDraw.Draw(original_image)
+                    real_path = []
+                    for py, px in path:
+                        real_path.append((int(px / scale_x), int(py / scale_y)))
+                    
+                    if len(real_path) > 1:
+                        draw.line(real_path, fill="#FF007F", width=6)
+                    
+                    # 마커: 원래 부스 위치에 찍어줌 (사용자 편의)
+                    r = 15
+                    draw.ellipse((sx-r, sy-r, sx+r, sy+r), fill="#00C853", outline="white", width=3)
+                    draw.ellipse((ex-r, ey-r, ex+r, ey+r), fill="#FF0000", outline="white", width=3)
+                    st.image(original_image, use_container_width=True)
+                else:
+                    st.warning("경로를 찾을 수 없습니다. (통로가 연결되어 있지 않음)")

@@ -1,98 +1,141 @@
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
+import difflib # 문자열 유사도 비교를 위한 라이브러리
 
 # --- 페이지 설정 ---
-st.set_page_config(page_title="KPEX 2025 길찾기", page_icon="🗺️")
+st.set_page_config(page_title="KPEX 2025 스마트 내비게이션", page_icon="🗺️")
 
 # --- CSS 스타일 ---
 st.markdown("""
     <style>
-    .stSelectbox { margin-bottom: 20px; }
-    .guide-text { font-size: 1.2rem; font-weight: bold; color: #1f77b4; }
+    .stTextInput > div > div > input { font-size: 1.1rem; }
+    .guide-text { font-size: 1.3rem; font-weight: bold; color: #1f77b4; margin-top: 20px;}
+    .error-text { color: #FF4B4B; font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 부스 좌표 데이터 (Demo용 주요 부스 매핑) ---
-# 이미지의 왼쪽 상단을 (0, 0), 오른쪽 하단을 (100, 100)으로 보았을 때의 % 좌표입니다.
-# 실제 운영 시에는 모든 부스의 좌표를 이 딕셔너리에 추가해야 합니다.
+# --- 부스 좌표 데이터 (업데이트됨) ---
+# 실제 서비스 시에는 이 데이터를 최대한 많이, 정확하게 입력해야 합니다.
+# 좌표 기준: 이미지 좌측 상단(0,0) ~ 우측 하단(100,100) % 좌표
 BOOTH_LOCATIONS = {
-    "출입구 (세미나장 A 측)": (15, 95),
-    "출입구 (세미나장 B 측)": (15, 5),
+    # 주요 시설
+    "출입구(세미나장 A측)": (15, 95),
+    "출입구(세미나장 B측)": (15, 5),
     "카페테리아": (25, 15),
-    "KT (중앙 하단)": (45, 82),
-    "DAEJI (우측 상단)": (88, 18),
-    "경찰과학수사관": (40, 15),
-    "Naviworks": (55, 15),
-    "KADIF (자율주행)": (65, 15),
+    "KPEX 라운지": (40, 15),
     "세미나장 A": (10, 85),
     "세미나장 B": (10, 35),
     "KOTRA 수출상담회장": (10, 55),
-    "ETRI (연구원)": (26, 82),
-    "드론 시큐리티 특별관": (65, 45),
+    # 주요 참가업체 (도면 기반 추정)
+    "경찰과학수사관": (50, 15),
+    "Naviworks": (60, 15),
+    "KADIF": (70, 15),
+    "한국도로교통공단": (80, 15),
+    "첨단교통관": (88, 15),
+    "DAEJI": (92, 20),
+    "KT": (45, 82),
+    "ETRI": (26, 82),
     "소방청": (58, 88),
-    "Drager (우측 중단)": (75, 40),
-    "KAI (우측 중단)": (85, 40)
+    "드론 시큐리티 특별관": (65, 45),
+    "Drager": (75, 40),
+    "KAI": (85, 40),
+    "LIG넥스원": (80, 65),
+    "한화시스템": (80, 55),
+    "현대자동차": (60, 65)
 }
 
-def draw_path(image, start_name, end_name):
-    """이미지 위에 출발지와 도착지를 잇는 선을 그립니다."""
+# --- 도우미 함수: 스마트 부스 찾기 (Fuzzy Matching) ---
+def find_best_match(user_input, db_keys):
+    """사용자 입력과 가장 유사한 부스 이름을 데이터베이스에서 찾습니다."""
+    if not user_input:
+        return None
+    # 1. 완전 일치 확인
+    if user_input in db_keys:
+        return user_input
+    
+    # 2. 소문자로 변환하여 부분 일치 확인 (예: 'kt' 입력 시 'KT' 찾기)
+    user_lower = user_input.lower()
+    candidates = []
+    for key in db_keys:
+        if user_lower in key.lower():
+            candidates.append(key)
+    
+    if candidates:
+        # 부분 일치하는 것 중 가장 짧은 것(가장 핵심적인 것) 반환 (단순화)
+        return min(candidates, key=len)
+
+    # 3. (선택사항) difflib을 이용한 유사도 매칭 (오타 보정 등)
+    # matches = difflib.get_close_matches(user_input, db_keys, n=1, cutoff=0.5)
+    # if matches:
+    #     return matches[0]
+        
+    return None
+
+# --- 도우미 함수: 직각 경로 그리기 (Manhattan Path) ---
+def draw_manhattan_path(image, start_name, end_name):
+    """출발지와 도착지를 직각으로 꺾이는 선으로 연결합니다."""
     img_copy = image.copy()
     draw = ImageDraw.Draw(img_copy)
     width, height = img_copy.size
 
-    # 좌표 가져오기 (퍼센트를 픽셀로 변환)
-    start_pos = BOOTH_LOCATIONS[start_name]
-    end_pos = BOOTH_LOCATIONS[end_name]
+    start_pos_pct = BOOTH_LOCATIONS[start_name]
+    end_pos_pct = BOOTH_LOCATIONS[end_name]
 
-    start_x, start_y = start_pos[0] * width / 100, start_pos[1] * height / 100
-    end_x, end_y = end_pos[0] * width / 100, end_pos[1] * height / 100
+    # 픽셀 좌표로 변환
+    sx, sy = start_pos_pct[0] * width / 100, start_pos_pct[1] * height / 100
+    ex, ey = end_pos_pct[0] * width / 100, end_pos_pct[1] * height / 100
 
-    # 1. 경로 선 그리기 (두껍고 파란 선)
-    # 실제 앱에서는 장애물을 피하는 알고리즘(A*)이 필요하지만, 여기서는 직관적인 직선 안내를 구현
-    draw.line([(start_x, start_y), (end_x, end_y)], fill="blue", width=10)
+    # 경로 스타일 설정
+    line_color = "#0044FF" # 진한 파랑
+    line_width = 8
 
-    # 2. 출발지 표시 (초록색 원)
-    r = 15 # 반지름
-    draw.ellipse((start_x-r, start_y-r, start_x+r, start_y+r), fill="green", outline="white", width=3)
-    
-    # 3. 도착지 표시 (빨간색 원 + 타겟 마크)
-    draw.ellipse((end_x-r, end_y-r, end_x+r, end_y+r), fill="red", outline="white", width=3)
+    # 직각 경로 포인트 계산 (L자 형태)
+    # 1. 출발점에서 수평으로 이동하여 도착점의 X좌표까지 이동
+    # 2. 그 지점에서 수직으로 도착점의 Y좌표까지 이동
+    # (전시장 레이아웃에 따라 수직 먼저 이동하는 게 나을 수도 있습니다)
+    mid_x, mid_y = ex, sy
+
+    path_points = [(sx, sy), (mid_x, mid_y), (ex, ey)]
+
+    # 선 그리기
+    draw.line(path_points, fill=line_color, width=line_width)
+
+    # 출발/도착 마커 그리기
+    r_start = 12
+    r_end = 15
+    # 출발지 (초록 원)
+    draw.ellipse((sx-r_start, sy-r_start, sx+r_start, sy+r_start), fill="#28a745", outline="white", width=3)
+    # 도착지 (빨강 원)
+    draw.ellipse((ex-r_end, ey-r_end, ex+r_end, ey+r_end), fill="#dc3545", outline="white", width=4)
     
     return img_copy
 
 # --- 메인 UI ---
-st.title("🗺️ KPEX 2025 부스 내비게이션")
-st.markdown("현재 위치와 가고 싶은 부스를 선택하시면 경로를 안내해 드립니다.")
+st.title("🗺️ KPEX 2025 스마트 내비게이션")
+st.markdown("부스 이름을 직접 입력하여 경로를 확인하세요. (예: KT, 소방청, 카페테리아)")
 
-# 사이드바 혹은 메인 상단에 입력 폼 배치
-col1, col2 = st.columns(2)
-
-with col1:
-    start_point = st.selectbox("📍 현재 나의 위치", list(BOOTH_LOCATIONS.keys()), index=0)
-
-with col2:
-    # 도착지는 출발지를 제외한 목록에서 선택
-    target_options = [b for b in BOOTH_LOCATIONS.keys() if b != start_point]
-    end_point = st.selectbox("🚩 가고 싶은 부스", target_options, index=0)
-
-# 이미지 로드 및 처리
-try:
-    # GitHub 배포 시 이미지 파일 경로가 정확해야 합니다.
-    image = Image.open("floor_plan.jpg")
+# 입력 폼
+with st.form("nav_form"):
+    col1, col2 = st.columns(2)
+    with col1:
+        start_input = st.text_input("📍 현재 위치 (입력)", placeholder="예: 출입구")
+    with col2:
+        end_input = st.text_input("🚩 목적지 (입력)", placeholder="예: 경찰과학수사관")
     
-    # 경로 그리기 함수 호출
-    result_image = draw_path(image, start_point, end_point)
-    
-    st.divider()
-    
-    # 결과 텍스트
-    st.markdown(f"<p class='guide-text'>🚀 '{start_point}'에서 '{end_point}'(으)로 이동하는 경로입니다.</p>", unsafe_allow_html=True)
-    
-    # 지도 표시 (화면 너비에 맞춤)
-    st.image(result_image, caption="파란색 선을 따라 이동하세요.", use_container_width=True)
+    submit_button = st.form_submit_button("길찾기 시작 🚀", type="primary")
 
-except FileNotFoundError:
-    st.error("⚠️ 'floor_plan.jpg' 파일을 찾을 수 없습니다. 같은 폴더에 지도 이미지를 넣어주세요.")
+# 결과 처리
+if submit_button:
+    # 1. 입력값 검증 및 매칭 찾기
+    start_match = find_best_match(start_input.strip(), BOOTH_LOCATIONS.keys())
+    end_match = find_best_match(end_input.strip(), BOOTH_LOCATIONS.keys())
 
-except Exception as e:
-    st.error(f"오류가 발생했습니다: {e}")
+    # 2. 오류 처리 및 결과 표시
+    if not start_input or not end_input:
+         st.warning("출발지와 목적지를 모두 입력해주세요.")
+    elif not start_match:
+        st.markdown(f"<p class='error-text'>❌ '{start_input}'과(와) 일치하는 부스를 찾을 수 없습니다. 이름을 확인해주세요.</p>", unsafe_allow_html=True)
+    elif not end_match:
+        st.markdown(f"<p class='error-text'>❌ '{end_input}'과(와) 일치하는 부스를 찾을 수 없습니다. 이름을 확인해주세요.</p>", unsafe_allow_html=True)
+    elif start_match == end_match:
+         st.warning("출발지와 목적

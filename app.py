@@ -1,437 +1,225 @@
 import streamlit as st
 from streamlit_image_coordinates import streamlit_image_coordinates
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import heapq
 from collections import deque
+import re
 
 # --- 1. 페이지 설정 ---
 st.set_page_config(page_title="SIK 2025 스마트 내비게이션", page_icon="🎨", layout="wide")
 
 st.markdown("""
     <style>
-    .main-header { font-size: 2rem; font-weight: bold; color: #FF4B4B; }
-    .stButton>button { width: 100%; border-radius: 8px; background-color: #FF4B4B; color: white; font-weight: bold;}
-    .coord-box { background-color: #f0f2f6; padding: 10px; border-radius: 5px; border: 1px solid #ccc; font-family: monospace;}
+    .main-header { font-size: 2rem; font-weight: bold; color: #1E88E5; }
+    .stButton>button { width: 100%; border-radius: 8px; background-color: #1E88E5; color: white; font-weight: bold;}
+    .coord-box { 
+        background-color: #e3f2fd; 
+        padding: 15px; 
+        border-radius: 10px; 
+        border: 2px solid #1E88E5; 
+        font-family: monospace;
+        color: #0d47a1;
+        margin-bottom: 20px;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 전체 부스 데이터 ---
-# [Tip] 이제 부스 정중앙(색깔 위)을 좌표로 찍어도 됩니다! AI가 알아서 앞쪽 통로로 안내합니다.
-BOOTH_LOCATIONS = {
-    # ================= [주요 시설] =================
-    "출입구 (Entrance)": (500, 950),
-    "카페테리아 (Cafeteria)": (100, 150),
-    "화장실 (Restroom)": (950, 500),
-    "수유실": (900, 100),
-    "경품수령처": (450, 900),
+# --- 2. 부스 데이터 (PDF 2페이지 완벽 반영) ---
+# [알림] 데이터가 매우 많으므로 딕셔너리로 관리합니다.
+# 형식: "부스번호": "업체명" (검색의 편의를 위해 번호를 키로 사용)
 
-    # ================= [기획관] =================
-    "캐리커쳐 기획관": (200, 150),
-    "디저트팝업존": (150, 400),
-    "아트작가 초대전": (150, 600),
-    "밀리 이벤트존": (300, 150),
-    "글로벌 아티스트존": (400, 100),
-    "머스 기획관": (500, 100),
-    "오늘의 세계(원화전)": (600, 100),
-    "나의 일러스트레이션 이야기": (650, 100),
-    "네컷프레임 사진관": (100, 100),
-    "라이브드로잉": (250, 250),
+RAW_BOOTH_DATA = {
+    # [주요 시설]
+    "Ent-1": "목/토 입구 (Entrance)",
+    "Ent-2": "금/일 입구 (Entrance)",
+    "Cafe": "카페테리아 (Cafeteria)",
+    "Live": "라이브드로잉 & 카페",
+    "Sp-1": "캐리커쳐 기획관",
+    "Sp-2": "디저트팝업",
+    "Sp-3": "아트작가 초대전",
+    "Sp-4": "네컷프레임 사진관",
+    
+    # [A존]
+    "A-100": "1989 PALETTE", "A-101": "클립아트코리아", "A-104": "끼니디자인", "A-111": "소량",
+    "A-114": "메이마트", "A-118": "디지", "A-121": "페이퍼", "A-124": "자이언트아이 아트스튜디오",
+    "A-125": "나다스토리", "A-128": "홈어스", "A-130": "굿워크", "A-132": "하함스튜디오",
+    
+    # [B존]
+    "B-104": "고양이다방", "B-110": "지니요니", "B-111": "TTIPCY", "B-112": "자민해",
+    "B-115": "지지(MONZIZI)", "B-120": "블루츠", "B-124": "투유럽미", "B-126": "설기일러스트",
+    "B-131": "빈집", "B-201": "Gimm", "B-218": "초목점화", "B-219": "페녀리니",
+    "B-220": "농농이", "B-221": "한림사", "B-224": "키팅제이",
+    
+    # [C존]
+    "C-100": "윤조유라", "C-103": "비모델 스튜디오", "C-104": "달빛곰", "C-110": "붓터치",
+    "C-111": "MachiK", "C-112": "MIND FAMILY", "C-113": "yaoyao", "C-115": "inkpainting",
+    "C-118": "Art Work Shop Kyoko", "C-120": "산그리메", "C-125": "김효정", "C-129": "일러스트레이터 양파",
+    "C-130": "위시유", "C-131": "오묘", "C-200": "말로하곰곰", "C-208": "6-208",
+    "C-211": "광태", "C-214": "김이네", "C-218": "기온스튜디오", "C-219": "리터프롤러브드",
+    "C-220": "옴즈", "C-231": "피피",
+    
+    # [D존]
+    "D-100": "말앞이 디자인", "D-101": "미야오타운", "D-103": "제니빌리지", "D-107": "박산",
+    "D-110": "로스트앤파운드", "D-115": "스튜디오 다람", "D-118": "DONEARTH", "D-123": "영도리",
+    "D-124": "타노월드", "D-128": "바이고대", "D-130": "그러는 인", "D-201": "113",
+    "D-213": "Straycat tarot", "D-214": "Sleepybere", "D-215": "The 3rd Daughter", "D-216": "namodo",
+    "D-219": "머리", "D-224": "모도리 스튜디오", "D-232": "Draft.apics",
+    
+    # [F존]
+    "F-101": "코코의 그림공간", "F-102": "고동성", "F-103": "호랑", "F-104": "아라빅스",
+    "F-106": "프렌즈", "F-107": "담장아래", "F-108": "고라니", "F-114": "달담",
+    "F-115": "허다마리", "F-116": "모모이하우스", "F-119": "오기환", "F-120": "구리",
+    "F-124": "니어바이디어", "F-128": "milky rapstar", "F-129": "모서리 스튜디오", "F-130": "코스모 익스프레스",
+    "F-131": "Rosemary Hill", "F-201": "싱포유스튜디오", "F-203": "듀원", "F-204": "두루뭉이두더지",
+    "F-207": "복자하우스", "F-209": "단식원", "F-211": "젠디디", "F-212": "연두십",
+    "F-213": "우당탕탕스토어", "F-215": "도순상현", "F-220": "잠동사니", "F-221": "다람",
+    "F-223": "다블랙", "F-224": "지우 스마일", "F-226": "스튜디오 표니", "F-229": "루이와코이누",
+    "F-231": "Catist",
+    
+    # [G존]
+    "G-100": "쇼킹핑크로즈", "G-101": "유승", "G-111": "도아세", "G-112": "동식품원",
+    "G-114": "우연철", "G-118": "백구성스튜디오", "G-120": "닛(Knit)", "G-121": "2-121",
+    "G-128": "하이볼루유", "G-129": "Ideal Idea", "G-130": "레드이어스클럽", "G-200": "Thustimesu",
+    "G-201": "콜리스튜디오", "G-214": "토끼 과 친구들", "G-215": "하슈밴드", "G-223": "앙고라로라",
+    "G-228": "CEE", "G-229": "dawnitive wave", "G-231": "사리안루니",
+    
+    # [H존]
+    "H-100": "주스", "H-101": "안녕, 말로하", "H-102": "리노프렌즈", "H-104": "벨로이루",
+    "H-107": "조각", "H-110": "츄리서랍", "H-112": "유교곰", "H-119": "OHD",
+    "H-120": "밀크병스튜디오", "H-129": "다라미네", "H-130": "단주스퀘어", "H-133": "studio som",
+    "H-200": "루루피94", "H-201": "채보리", "H-202": "스튜디오니모", "H-203": "판타포레",
+    "H-204": "김보미", "H-208": "수피", "H-211": "디어폴리", "H-212": "세라베어",
+    "H-216": "전", "H-219": "From Gyeol", "H-220": "산뽀", "H-223": "공진어트",
+    "H-225": "아득", "H-228": "연메이드", "H-230": "큐티지파실", "H-231": "허다마리",
+    
+    # [J존]
+    "J-102": "차리", "J-103": "스누즈키즈", "J-106": "Netty Lee", "J-112": "에이드바이용",
+    "J-115": "스디", "J-120": "바나밀러스트", "J-124": "EM, C", "J-125": "니드",
+    "J-134": "범캣츠", "J-200": "블랙라터", "J-201": "딩굴", "J-202": "카라",
+    "J-203": "메이마트", "J-204": "뚜디어리", "J-208": "록시(HOXIE)", "J-215": "어봤구",
+    "J-219": "독다학방", "J-220": "스튜디오 퐁듀", "J-223": "비타폼폼", "J-226": "하리커피",
+    "J-229": "젤리부", "J-231": "개구리라미",
+    
+    # [K존]
+    "K-101": "코리아", "K-104": "오덕스튜디오", "K-106": "라운드루프", "K-107": "율무상상",
+    "K-108": "미뉴", "K-121": "아임구르미", "K-128": "방쥬", "K-130": "우거진",
+    "K-201": "별히인공여", "K-204": "마늄이", "K-206": "말순마켓", "K-207": "비아 크래프트",
+    "K-208": "포물덕상점", "K-211": "브패", "K-214": "묘카상심", "K-220": "마냥",
+    "K-223": "쏘그리즈", "K-225": "보다스페이스", "K-229": "야음팬", "K-231": "이트맨",
+    "K-235": "김중이",
+    
+    # [O존 - 키스틱빌리지 등]
+    "O-101": "키스틱빌리지", "O-102": "zeeky", "O-104": "감성공작소", "O-110": "뚜모네",
+    "O-111": "동식품원", "O-112": "개박하", "O-113": "KNOTKNOT", "O-114": "포카포카",
+    "O-211": "Bangkok Fair (BKKIF)", "O-220": "단풍", "O-226": "모던보이",
 
-    # ================= [A존] =================
-    "A-100 1989 PALETTE": (100, 750),
-    "A-101 클립아트코리아": (100, 760),
-    "A-104 끼니디자인": (110, 750),
-    "A-111 소량": (110, 760),
-    "A-114 메이마트": (120, 750),
-    "A-118 디지": (120, 760),
-    "A-121 페이퍼": (130, 750),
-    "A-124 자이언트아이": (130, 760),
-    "A-128 홈어스": (140, 750),
-    "A-130 굿워크": (140, 760),
-    "A-132 하함스튜디오": (150, 750),
+    # [P존]
+    "P-100": "야울이미당", "P-101": "디엠피 북스토어", "P-103": "마트", "P-108": "지연",
+    "P-111": "밀크병스튜디오", "P-113": "소녀 유니버스", "P-117": "마오안(ADAN)",
 
-    # ================= [B존] =================
-    "B-104 고양이다방": (200, 750),
-    "B-110 지니요니": (200, 760),
-    "B-111 TTIPCY": (210, 750),
-    "B-112 자민해": (210, 760),
-    "B-115 지지(MONZIZI)": (220, 750),
-    "B-120 블루츠": (220, 760),
-    "B-124 투유럽미": (230, 750),
-    "B-126 설기일러스트": (230, 760),
-    "B-131 빈집": (240, 750),
-    "B-201 Gimm": (250, 750),
-    "B-218 초목점화": (250, 760),
-    "B-219 페녀리니": (260, 750),
-    "B-220 농농이": (260, 760),
-    "B-221 한림사": (270, 750),
-    "B-224 키팅제이": (270, 760),
-
-    # ================= [C존] =================
-    "C-100 윤조유라": (300, 300),
-    "C-103 비모델 스튜디오": (300, 310),
-    "C-104 달빛곰": (310, 300),
-    "C-110 붓터치": (310, 310),
-    "C-111 MachiK": (320, 300),
-    "C-112 MIND FAMILY": (320, 310),
-    "C-113 yaoyao": (330, 300),
-    "C-115 inkpainting": (330, 310),
-    "C-118 쿄코(Kyoko)": (340, 300),
-    "C-120 산그리메": (340, 310),
-    "C-125 김효정": (350, 300),
-    "C-129 양파": (350, 310),
-    "C-130 위시유": (360, 300),
-    "C-131 오묘": (360, 310),
-    "C-200 말로하곰곰": (370, 300),
-    "C-208 6-208": (370, 310),
-    "C-211 광태": (380, 300),
-    "C-214 김이네": (380, 310),
-    "C-218 기온스튜디오": (390, 300),
-    "C-219 리터프롤러브드": (390, 310),
-    "C-220 옴즈": (400, 300),
-    "C-231 피피": (400, 310),
-
-    # ================= [D존] =================
-    "D-100 말앞이 디자인": (500, 400),
-    "D-101 미야오타운": (500, 410),
-    "D-103 제니빌리지": (510, 400),
-    "D-107 박산": (510, 410),
-    "D-110 로스트앤파운드": (520, 400),
-    "D-115 스튜디오 다람": (520, 410),
-    "D-118 DONEARTH": (530, 400),
-    "D-123 영도리": (530, 410),
-    "D-124 타노월드": (540, 400),
-    "D-128 바이고대": (540, 410),
-    "D-130 그러는 인": (550, 400),
-    "D-201 113": (550, 410),
-    "D-213 Straycat tarot": (560, 400),
-    "D-214 Sleepybere": (560, 410),
-    "D-215 The 3rd Daughter": (570, 400),
-    "D-216 나모도": (570, 410),
-    "D-219 머리": (580, 400),
-    "D-224 모도리 스튜디오": (580, 410),
-    "D-232 Draft.apics": (590, 400),
-
-    # ================= [F존] =================
-    "F-101 코코의 그림공간": (700, 300),
-    "F-102 고동성": (700, 310),
-    "F-103 호랑": (710, 300),
-    "F-104 아라빅스": (710, 310),
-    "F-106 프렌즈": (720, 300),
-    "F-107 담장아래": (720, 310),
-    "F-108 고라니": (730, 300),
-    "F-114 달담": (730, 310),
-    "F-115 허다마리": (740, 300),
-    "F-116 모모이하우스": (740, 310),
-    "F-119 오기환": (750, 300),
-    "F-120 구리": (750, 310),
-    "F-124 니어바이디어": (760, 300),
-    "F-128 milky rapstar": (760, 310),
-    "F-129 모서리 스튜디오": (770, 300),
-    "F-130 코스모 익스프레스": (770, 310),
-    "F-131 Rosemary Hill": (780, 300),
-    "F-201 싱포유스튜디오": (780, 310),
-    "F-203 듀원": (790, 300),
-    "F-204 두루뭉이두더지": (790, 310),
-    "F-207 복자하우스": (800, 300),
-    "F-209 단식원": (800, 310),
-    "F-211 젠디디": (810, 300),
-    "F-212 연두십": (810, 310),
-    "F-213 우당탕탕스토어": (820, 300),
-    "F-215 도순상현": (820, 310),
-    "F-220 잠동사니": (830, 300),
-    "F-221 다람": (830, 310),
-    "F-223 다블랙": (840, 300),
-    "F-224 지우 스마일": (840, 310),
-    "F-226 스튜디오 표니": (850, 300),
-    "F-229 루이와코이누": (850, 310),
-    "F-231 Catist": (860, 300),
-
-    # ================= [G존] =================
-    "G-100 쇼킹핑크로즈": (400, 600),
-    "G-101 유승": (400, 610),
-    "G-111 도아세": (410, 600),
-    "G-112 동식품원": (410, 610),
-    "G-114 우연철": (420, 600),
-    "G-118 백구성스튜디오": (420, 610),
-    "G-120 닛(Knit)": (430, 600),
-    "G-121 2-121": (430, 610),
-    "G-128 하이볼루유": (440, 600),
-    "G-129 Ideal Idea": (440, 610),
-    "G-130 레드이어스클럽": (450, 600),
-    "G-200 Thustimesu": (450, 610),
-    "G-201 콜리스튜디오": (460, 600),
-    "G-214 토끼 과 친구들": (460, 610),
-    "G-215 하슈밴드": (470, 600),
-    "G-223 앙고라로라": (470, 610),
-    "G-228 CEE": (480, 600),
-    "G-229 dawnitive wave": (480, 610),
-    "G-231 사리안루니": (490, 600),
-
-    # ================= [H존] =================
-    "H-100 주스": (600, 200),
-    "H-101 안녕, 말로하": (600, 210),
-    "H-102 리노프렌즈": (610, 200),
-    "H-104 벨로이루": (610, 210),
-    "H-107 조각": (620, 200),
-    "H-110 츄리서랍": (620, 210),
-    "H-112 유교곰": (630, 200),
-    "H-119 OHD": (630, 210),
-    "H-120 밀크병스튜디오": (640, 200),
-    "H-129 다라미네": (640, 210),
-    "H-130 단주스퀘어": (650, 200),
-    "H-133 studio som": (650, 210),
-    "H-200 루루피94": (660, 200),
-    "H-201 채보리": (660, 210),
-    "H-202 스튜디오니모": (670, 200),
-    "H-203 판타포레": (670, 210),
-    "H-204 김보미": (680, 200),
-    "H-208 수피": (680, 210),
-    "H-211 디어폴리": (690, 200),
-    "H-212 세라베어": (690, 210),
-    "H-216 전": (700, 200),
-    "H-219 From Gyeol": (700, 210),
-    "H-220 산뽀": (710, 200),
-    "H-223 공진어트": (710, 210),
-    "H-225 아득": (720, 200),
-    "H-228 연메이드": (720, 210),
-    "H-230 큐티지파실": (730, 200),
-    "H-231 허다마리": (730, 210),
-
-    # ================= [J존] =================
-    "J-102 차리": (100, 500),
-    "J-103 스누즈키즈": (100, 510),
-    "J-106 Netty Lee": (110, 500),
-    "J-112 에이드바이용": (110, 510),
-    "J-115 스디": (120, 500),
-    "J-120 바나밀러스트": (120, 510),
-    "J-124 EM, C": (130, 500),
-    "J-125 니드": (130, 510),
-    "J-134 범캣츠": (140, 500),
-    "J-200 블랙라터": (140, 510),
-    "J-201 딩굴": (150, 500),
-    "J-202 카라": (150, 510),
-    "J-203 메이마트": (160, 500),
-    "J-204 뚜디어리": (160, 510),
-    "J-208 록시(HOXIE)": (170, 500),
-    "J-215 어봤구": (170, 510),
-    "J-219 독다학방": (180, 500),
-    "J-220 스튜디오 퐁듀": (180, 510),
-    "J-223 비타폼폼": (190, 500),
-    "J-226 하리커피": (190, 510),
-    "J-229 젤리부 (JeliRivu)": (200, 500),
-    "J-231 개구리라미": (200, 510),
-
-    # ================= [K존] =================
-    "K-101 코리아": (900, 100),
-    "K-104 오덕스튜디오": (900, 110),
-    "K-106 라운드루프": (910, 100),
-    "K-107 율무상상": (910, 110),
-    "K-108 미뉴": (920, 100),
-    "K-121 아임구르미": (920, 110),
-    "K-128 방쥬": (930, 100),
-    "K-130 우거진": (930, 110),
-    "K-201 별히인공여": (940, 100),
-    "K-204 마늄이": (940, 110),
-    "K-206 말순마켓": (950, 100),
-    "K-207 비아 크래프트": (950, 110),
-    "K-208 포물덕상점": (960, 100),
-    "K-211 브패": (960, 110),
-    "K-214 묘카상심": (970, 100),
-    "K-220 마냥": (970, 110),
-    "K-223 쏘그리즈": (980, 100),
-    "K-225 보다스페이스": (980, 110),
-    "K-229 야음팬": (990, 100),
-    "K-231 이트맨": (990, 110),
-    "K-235 김중이": (990, 120),
-
-    # ================= [L존] =================
-    "L-100 하나님": (50, 700),
-    "L-101 심냥즈": (50, 710),
-    "L-103 니버스": (60, 700),
-    "L-107 힘교미": (60, 710),
-    "L-109 콩동이네": (70, 700),
-    "L-112 루명의 그림들": (70, 710),
-    "L-113 멜팅컷": (80, 700),
-    "L-120 리얼(서예린)": (80, 710),
-    "L-123 푸어오": (90, 700),
-    "L-131 고선타": (90, 710),
-    "L-207 민타": (100, 700),
-    "L-215 다그림": (100, 710),
-    "L-220 모체토리": (110, 700),
-    "L-224 크리미밀키": (110, 710),
-
-    # ================= [M존] =================
-    "M-101 문학 섭": (250, 900),
-    "M-102 아야네": (250, 910),
-    "M-103 더푸리 빌리지": (260, 900),
-    "M-106 코코의 그림공간": (260, 910),
-    "M-107 네": (270, 900),
-    "M-110 시코르 동사무소": (270, 910),
-    "M-115 이화여대병설미디어고등학교": (280, 900),
-    "M-118 오뚝이숲": (280, 910),
-    "M-120 말로하곰곰": (290, 900),
-    "M-121 처리블로": (290, 910),
-    "M-126 상점": (300, 900),
-    "M-128 L-113": (300, 910),
-    "M-129 모든": (310, 900),
-    "M-130 미모": (310, 910),
-    "M-131 러브크레센트": (320, 900),
-    "M-201 은 nuleun": (320, 910),
-    "M-204 노베지지에": (330, 900),
-    "M-206 밍다함 그림일기": (330, 910),
-    "M-207 구냥이": (340, 900),
-    "M-211 아르베": (340, 910),
-    "M-212 으니세작업실": (350, 900),
-    "M-214 Book해피핸디": (350, 910),
-    "M-215 nunnu": (360, 900),
-    "M-216 꾸꾸만들기": (360, 910),
-    "M-220 리포포": (370, 900),
-    "M-225 므": (370, 910),
-    "M-226 유어투데이": (380, 900),
-    "M-228 채도": (380, 910),
-    "M-229 Gunwoo Frierids": (390, 900),
-    "M-230 사리안루니": (390, 910),
-
-    # ================= [O존] =================
-    "O-101 키스틱빌리지": (850, 800),
-    "O-102 zeeky": (850, 810),
-    "O-104 감성공작소": (860, 800),
-    "O-110 뚜모네": (860, 810),
-    "O-111 동식품원": (870, 800),
-    "O-112 개박하": (870, 810),
-    "O-113 KNOTKNOT": (880, 800),
-    "O-114 포카포카": (880, 810),
-    "O-115 최연진": (890, 800),
-    "O-120 김모양군": (890, 810),
-    "O-121 7AM": (900, 800),
-    "O-126 루마": (900, 810),
-    "O-131 니어바이디어": (910, 800),
-    "O-200 3분수채초상화": (910, 810),
-    "O-201 냉이골골": (920, 800),
-    "O-203 노마": (920, 810),
-    "O-210 스튜디오 쪼물": (930, 800),
-    "O-211 Bangkok Fair": (930, 810),
-    "O-213 단비스페이스": (940, 800),
-    "O-215 태림": (940, 810),
-    "O-218 푸키큐티": (950, 800),
-    "O-220 단풍": (950, 810),
-    "O-221 도시오브드림": (960, 800),
-    "O-223 위티프라티": (960, 810),
-    "O-224 다끼스튜디오": (970, 800),
-    "O-225 차": (970, 810),
-    "O-226 모던보이": (980, 800),
-    "O-228 전셋": (980, 810),
-    "O-229 네모진": (990, 800),
-    "O-230 요요": (990, 810),
-    "O-231 올리": (990, 820),
-
-    # ================= [P존] =================
-    "P-100 야울이미당": (600, 50),
-    "P-101 디엠피 북스토어": (610, 50),
-    "P-103 마트": (620, 50),
-    "P-108 지연": (630, 50),
-    "P-111 밀크병스튜디오": (640, 50),
-    "P-113 소녀 유니버스": (650, 50),
-    "P-114 리동네친구들": (660, 50),
-    "P-115 CEE": (670, 50),
-    "P-116 오불": (680, 50),
-    "P-117 마오안(ADAN)": (690, 50),
-    "P-118 즈(ploppyz)": (700, 50),
-
-    # ================= [S존] =================
-    "S-101 계원예대": (800, 200),
-    "S-102 계원예대 순수미술": (800, 210),
-    "S-104 이들 Yidle": (810, 200),
-    "S-106 밸트글라스": (810, 210),
-    "S-107 매서 냥이": (820, 200),
-    "S-108 KANGZI (강지)": (830, 200),
-    "S-109 디아트82": (830, 210),
-    "S-110 LJE": (840, 200),
-    "S-114 홍무아": (840, 210),
-    "S-115 디아더월드": (850, 200),
-    "S-117 모리 Morn": (850, 210),
-    "S-125 서울예술대학교": (860, 200),
-
-    # ================= [T존] =================
-    "T-001 톤어스 (TOONUS)": (200, 800),
-    "T-204 투유럽미": (210, 800),
-
-    # ================= [디저트 존] =================
-    "Dessert-01 아리감성": (50, 400),
-    "Dessert-02 비단수적": (50, 410),
-    "Dessert-03 플라잉더치": (60, 400),
-    "Dessert-04 메탈트": (60, 410),
-    "Dessert-05 더리얼티": (70, 400),
-    "Dessert-06 쥬니쿠키": (70, 410),
-    "Dessert-07 파파누룽지": (80, 400),
-    "Dessert-08 불량": (80, 410),
-    "Dessert-09 프리미엄 쿠키": (90, 400),
-    "Dessert-10 꼬마루육포": (90, 410),
-    "Dessert-11 뉴욕의 저스트 쿠키": (100, 400),
-    "Dessert-12 순두부젤라또": (100, 410),
-    "Dessert-13 과밀과즙젤리": (110, 400),
-    "Dessert-14 메타프레쉬": (110, 410),
-    "Dessert-15 비단수적": (120, 400),
-    "Dessert-16 언제나 여름": (120, 410),
-    "Dessert-17 달치나": (130, 400),
-    "Dessert-18 양포네": (130, 410),
-    "소소컴": (350, 320)
+    # [기타]
+    "SoSo": "소소컴 (SoSo Com)",
 }
 
-# --- 3. 핵심 알고리즘: A* 경로 탐색 + [NEW] 가장 가까운 통로 찾기 ---
+# --- 3. 좌표 자동 생성 로직 (이미지 분석 기반) ---
+def get_auto_coordinates(booth_code):
+    """
+    부스 번호(예: A-101, F-204)를 분석하여 도면상의 대략적인 좌표를 반환합니다.
+    이미지 크기: 1000 x 700 (가로 x 세로) 기준 정규화
+    """
+    # 1. 고정 시설 좌표 (수동 매핑)
+    fixed_locations = {
+        "Ent-1": (350, 950), "Ent-2": (750, 950), # 입구 (하단)
+        "Cafe": (150, 300), "Live": (150, 350),   # 카페테리아 (좌측 상단)
+        "Sp-1": (100, 100), "Sp-2": (100, 500),   # 기획관 (좌측)
+        "Sp-3": (100, 700), "Sp-4": (100, 50),
+        "SoSo": (400, 400), # 소소컴 임의 위치
+    }
+    
+    if booth_code in fixed_locations:
+        return fixed_locations[booth_code]
+
+    # 2. 부스 번호 파싱 (예: "F-204")
+    match = re.match(r"([A-Z])-(\d+)", booth_code)
+    if not match:
+        return (500, 500) # 파싱 실패 시 중앙
+
+    zone_char = match.group(1) # 'F'
+    number = int(match.group(2)) # 204
+
+    # 3. X축 결정 (존 별 위치)
+    # A(우측) <--- ... ---> M,P(좌측)
+    # 이미지 분석 결과: A존은 x=950 부근, P존은 x=300 부근
+    zone_x_map = {
+        'A': 950, 'B': 900, 'C': 850, 'D': 800,
+        'F': 700, 'G': 650, 'H': 600, 'J': 550,
+        'K': 500, 'L': 450, 'M': 400, 
+        'O': 920, 'P': 350, # O, P는 특수 위치
+        'S': 100 # S존은 좌측 하단 핑크색 구역
+    }
+    
+    base_x = zone_x_map.get(zone_char, 500)
+
+    # 4. Y축 결정 (번호 별 위치)
+    # 100번대: 하단 -> 상단 (101이 아래, 130이 위)
+    # 200번대: 하단 -> 상단 (201이 아래, 230이 위)
+    # 도면 높이 y=50(위) ~ y=900(아래)
+    
+    # 번호 정규화 (0 ~ 30 사이로 변환)
+    norm_num = number % 100 
+    
+    # 100번대와 200번대는 같은 열에 있을 수도 있고 옆 열일 수도 있음.
+    # 단순화를 위해 y축은 번호가 커질수록 위로 올라간다고 설정 (이미지상 101이 아래쪽)
+    # y = 900 - (norm_num * 25) 
+    base_y = 850 - (norm_num * 22)
+
+    # 약간의 X축 지그재그 (홀/짝수 열 구분 효과)
+    if number >= 200:
+        base_x -= 20 # 200번대는 왼쪽으로 살짝
+    
+    return (base_x, base_y)
+
+# --- 4. 핵심 알고리즘 (A* & Snapping) ---
 @st.cache_data
-def load_nav_mesh(image_path, grid_size=(100, 100)):
+def load_nav_mesh(image_path, grid_size=(100, 70)): # 가로 100, 세로 70 비율
     try:
         img = Image.open(image_path).convert("L")
         img_resized = img.resize(grid_size)
         img_array = np.array(img_resized)
-        # 흰색(230 이상)은 통로(0), 나머지는 벽(1)
+        # 흰색(배경)은 통로(0), 나머지는 벽(1)
         grid = np.where(img_array > 230, 0, 1) 
         return grid, img.size
     except Exception as e:
         return None, None
 
-def get_nearest_walkable_point(grid, start_node, max_radius=10):
-    """
-    [핵심 기능] 시작점(부스)이 벽(1)이라면, 주변을 나선형으로 탐색해
-    가장 가까운 통로(0) 좌표를 반환합니다.
-    """
+def get_nearest_walkable(grid, start_node, max_radius=15):
     rows, cols = grid.shape
+    r, c = start_node
+    # 범위 체크
+    r = max(0, min(r, rows-1))
+    c = max(0, min(c, cols-1))
     
-    # 이미 통로라면 바로 반환
-    if grid[start_node[0]][start_node[1]] == 0:
-        return start_node
-        
-    # BFS 탐색 (가장 가까운 곳부터 찾기 위해)
-    queue = deque([start_node])
-    visited = set([start_node])
+    if grid[r][c] == 0: return (r, c)
     
-    # 상하좌우 및 대각선 탐색
-    directions = [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (-1,1), (1,-1), (1,1)]
+    queue = deque([(r, c)])
+    visited = set([(r, c)])
     
     while queue:
         curr_r, curr_c = queue.popleft()
+        if grid[curr_r][curr_c] == 0: return (curr_r, curr_c)
         
-        # 통로 발견!
-        if grid[curr_r][curr_c] == 0:
-            return (curr_r, curr_c)
-            
-        # 범위 제한 (너무 멀리 찾지 않도록)
-        if abs(curr_r - start_node[0]) > max_radius or abs(curr_c - start_node[1]) > max_radius:
-            continue
-            
-        for dr, dc in directions:
+        if abs(curr_r - r) > max_radius or abs(curr_c - c) > max_radius: continue
+        
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
             nr, nc = curr_r + dr, curr_c + dc
             if 0 <= nr < rows and 0 <= nc < cols and (nr, nc) not in visited:
                 visited.add((nr, nc))
                 queue.append((nr, nc))
-                
-    return None # 못 찾음
+    return None
 
 def heuristic(a, b):
-    return np.sqrt((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2)
+    return abs(b[0] - a[0]) + abs(b[1] - a[1])
 
 def astar(array, start, goal):
     neighbors = [(0,1),(0,-1),(1,0),(-1,0)]
@@ -440,137 +228,154 @@ def astar(array, start, goal):
     g_score = {start: 0}
     f_score = {start: heuristic(start, goal)}
     oheap = []
-
     heapq.heappush(oheap, (f_score[start], start))
 
     while oheap:
         current = heapq.heappop(oheap)[1]
-
         if current == goal:
             data = []
             while current in came_from:
                 data.append(current)
                 current = came_from[current]
             return data[::-1]
-
         close_set.add(current)
         for i, j in neighbors:
             neighbor = current[0] + i, current[1] + j
             tentative_g_score = g_score[current] + 1
             if 0 <= neighbor[0] < array.shape[0]:
                 if 0 <= neighbor[1] < array.shape[1]:
-                    if array[neighbor[0]][neighbor[1]] == 1:
-                        continue
+                    if array[neighbor[0]][neighbor[1]] == 1: continue
                 else: continue
             else: continue
-            if neighbor in close_set and tentative_g_score >= g_score.get(neighbor, 0):
-                continue
-            if  tentative_g_score < g_score.get(neighbor, 0) or neighbor not in [i[1] for i in oheap]:
+            if neighbor in close_set and tentative_g_score >= g_score.get(neighbor, 0): continue
+            if tentative_g_score < g_score.get(neighbor, 0) or neighbor not in [i[1] for i in oheap]:
                 came_from[neighbor] = current
                 g_score[neighbor] = tentative_g_score
                 f_score[neighbor] = tentative_g_score + heuristic(neighbor, goal)
                 heapq.heappush(oheap, (f_score[neighbor], neighbor))
     return None
 
-# --- 4. 검색 도우미 함수 ---
-def find_target(keyword):
+# --- 5. 검색 함수 ---
+def search_booth(keyword):
     if not keyword: return None
-    keyword = keyword.lower().replace("-", "").replace(" ", "")
-    keyword_s = keyword.replace("5", "s")
-    keyword_o = keyword.replace("0", "o")
+    kw = keyword.lower().replace("-", "").replace(" ", "")
     
     matches = []
-    for key in BOOTH_LOCATIONS.keys():
-        key_clean = key.lower().replace("-", "").replace(" ", "")
-        if (keyword in key_clean) or (keyword_s in key_clean) or (keyword_o in key_clean):
-            matches.append(key)
+    for code, name in RAW_BOOTH_DATA.items():
+        # 검색 대상: 부스번호, 업체명
+        full_str = f"{code} {name}".lower().replace("-", "").replace(" ", "")
+        if kw in full_str:
+            matches.append(code)
     
+    # 정확도 순 정렬 (길이가 짧을수록 정확)
     matches.sort(key=len)
     return matches[0] if matches else None
 
-# --- 5. 메인 UI ---
-col_head1, col_head2 = st.columns([3, 1])
-with col_head1:
-    st.markdown("<h1 class='main-header'>🎨 SIK 2025 AI 내비게이션</h1>", unsafe_allow_html=True)
-with col_head2:
-    admin_mode = st.checkbox("관리자 모드 (좌표따기)")
+# --- 6. 메인 UI ---
+st.sidebar.title("🔧 관리자 메뉴")
+admin_mode = st.sidebar.checkbox("좌표 직접 수정 모드", value=False)
 
 img_path = "sik_floor_plan.jpg"
+
 try:
     original_image = Image.open(img_path)
-    aspect_ratio = original_image.height / original_image.width
+    # 이미지 사이즈 분석
+    W, H = original_image.size
     GRID_W = 100
-    GRID_H = int(GRID_W * aspect_ratio)
+    GRID_H = int(GRID_W * (H / W))
+    
+    # 맵 데이터 로드
     grid_map, original_size = load_nav_mesh(img_path, grid_size=(GRID_W, GRID_H))
+    
 except FileNotFoundError:
-    st.error("⚠️ 'sik_floor_plan.jpg' 파일이 없습니다.")
+    st.error("⚠️ 'sik_floor_plan.jpg' 파일이 필요합니다.")
     st.stop()
 
-# --- 기능: 관리자 모드 ---
+# ==========================================
+# [관리자 모드] 좌표 미세 조정
+# ==========================================
 if admin_mode:
-    st.info("👇 지도에서 부스 위치를 클릭하면 정확한 좌표를 딸 수 있습니다.")
+    st.title("📍 좌표 수정 시스템")
+    st.info("자동 계산된 좌표가 틀렸다면, 지도에서 클릭하여 수정하세요.")
+    
+    # 부스 선택
+    booth_list = [f"{k} ({v})" for k, v in RAW_BOOTH_DATA.items()]
+    selected_str = st.selectbox("수정할 부스 선택", booth_list)
+    selected_code = selected_str.split(" ")[0]
+    
+    st.write(f"👇 **{selected_str}**의 정확한 위치를 클릭하세요.")
     value = streamlit_image_coordinates(original_image, key="pil")
+    
     if value:
         x, y = value['x'], value['y']
-        st.markdown(f"""
-        <div class='coord-box'>
-            📍 클릭한 좌표: <b>({x}, {y})</b><br>
-            위 코드의 <code>BOOTH_LOCATIONS</code>를 수정하세요.
-        </div>
-        """, unsafe_allow_html=True)
+        
+        # 시각화
         draw = ImageDraw.Draw(original_image)
-        draw.ellipse((x-10, y-10, x+10, y+10), fill="red", outline="white", width=3)
-        st.image(original_image, caption="선택된 위치")
+        r = 15
+        draw.ellipse((x-r, y-r, x+r, y+r), fill="red", outline="white", width=4)
+        st.image(original_image, caption=f"수정된 위치: {selected_code}")
+        
+        # 코드 생성
+        st.success("좌표 추출 완료! 아래 코드를 복사해서 `fixed_locations`에 추가하세요.")
+        st.code(f'"{selected_code}": ({x}, {y}),')
 
-# --- 기능: 내비게이션 모드 ---
+# ==========================================
+# [사용자 모드] 길찾기
+# ==========================================
 else:
-    with st.form("nav"):
+    st.title("🎨 SIK 2025 스마트 내비게이션")
+    
+    with st.form("search_form"):
         c1, c2 = st.columns(2)
-        start_txt = c1.text_input("출발지", placeholder="예: 출입구")
-        end_txt = c2.text_input("목적지", placeholder="예: 소소컴, C-118")
+        start_txt = c1.text_input("출발지", placeholder="예: Ent-1, 입구")
+        end_txt = c2.text_input("목적지", placeholder="예: A-101, 키스틱")
         btn = st.form_submit_button("길찾기 🚀")
     
     if btn:
-        s_key = find_target(start_txt)
-        e_key = find_target(end_txt)
+        s_code = search_booth(start_txt)
+        e_code = search_booth(end_txt)
         
-        if not s_key or not e_key:
-            st.error("장소를 찾을 수 없습니다. 이름을 확인해주세요.")
+        if not s_code or not e_code:
+            st.error("❌ 장소를 찾을 수 없습니다. (업체명이나 부스번호를 확인해주세요)")
         else:
-            st.success(f"경로 탐색: **{s_key}** ➡ **{e_key}**")
+            s_name = RAW_BOOTH_DATA[s_code]
+            e_name = RAW_BOOTH_DATA[e_code]
+            st.success(f"🚩 경로 탐색: **{s_name}** ➡ **{e_name}**")
             
-            sx, sy = BOOTH_LOCATIONS[s_key]
-            ex, ey = BOOTH_LOCATIONS[e_key]
+            # 1. 좌표 계산 (자동 로직 사용)
+            sx, sy = get_auto_coordinates(s_code)
+            ex, ey = get_auto_coordinates(e_code)
             
-            # 그리드 좌표 변환
-            scale_x = GRID_W / original_size[0]
-            scale_y = GRID_H / original_size[1]
-            grid_start_raw = (int(sy * scale_y), int(sx * scale_x))
-            grid_end_raw = (int(ey * scale_y), int(ex * scale_x))
+            # 2. 그리드 매핑 및 스내핑 (벽 탈출)
+            scale_x = GRID_W / W
+            scale_y = GRID_H / H
             
-            # [NEW] 벽(부스)에 좌표가 있다면, 가장 가까운 통로로 '스내핑(Snapping)'
-            grid_start = get_nearest_walkable_point(grid_map, grid_start_raw)
-            grid_end = get_nearest_walkable_point(grid_map, grid_end_raw)
+            g_sx, g_sy = int(sx * scale_x), int(sy * scale_y)
+            g_ex, g_ey = int(ex * scale_x), int(ey * scale_y)
             
-            if not grid_start or not grid_end:
-                 st.error("주변에 통로가 없습니다. 맵이 너무 어둡거나 좌표가 완전히 막혀있습니다.")
-            else:
-                with st.spinner("AI가 통로를 따라 경로를 계산 중입니다..."):
-                    path = astar(grid_map, grid_start, grid_end)
+            start_node = get_nearest_walkable(grid_map, (g_sy, g_sx))
+            end_node = get_nearest_walkable(grid_map, (g_ey, g_ex))
+            
+            # 3. 경로 탐색
+            if start_node and end_node:
+                path = astar(grid_map, start_node, end_node)
                 
                 if path:
+                    # 결과 그리기
                     draw = ImageDraw.Draw(original_image)
-                    real_path = []
-                    for py, px in path:
-                        real_path.append((int(px / scale_x), int(py / scale_y)))
                     
-                    if len(real_path) > 1:
-                        draw.line(real_path, fill="#FF007F", width=6)
+                    # 경로 (그리드 -> 픽셀)
+                    pixel_path = [(int(c / scale_x), int(r / scale_y)) for r, c in path]
+                    if len(pixel_path) > 1:
+                        draw.line(pixel_path, fill="#FF007F", width=8)
                     
-                    # 마커: 원래 부스 위치에 찍어줌 (사용자 편의)
+                    # 출발/도착 마커
                     r = 15
-                    draw.ellipse((sx-r, sy-r, sx+r, sy+r), fill="#00C853", outline="white", width=3)
-                    draw.ellipse((ex-r, ey-r, ex+r, ey+r), fill="#FF0000", outline="white", width=3)
+                    draw.ellipse((sx-r, sy-r, sx+r, sy+r), fill="#00C853", outline="white", width=4)
+                    draw.ellipse((ex-r, ey-r, ex+r, ey+r), fill="#2962FF", outline="white", width=4)
+                    
                     st.image(original_image, use_container_width=True)
                 else:
-                    st.warning("경로를 찾을 수 없습니다. (통로가 연결되어 있지 않음)")
+                    st.warning("⚠️ 경로가 막혀있습니다. (출발지/목적지가 벽 내부에 깊숙이 있습니다)")
+            else:
+                st.error("⚠️ 위치를 지도상에서 특정할 수 없습니다. (맵 인식 오류)")
